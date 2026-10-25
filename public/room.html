@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Call - Connect</title>
+     <link rel="stylesheet" href="/polish.css">
+  <script src="/socket.io/socket.io.js"></script>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 0; background: #1a1a2e; color: white; }
+    header { background: #16213e; padding: 12px 24px; display: flex;
+             justify-content: space-between; align-items: center; }
+    #room-code { font-size: 13px; color: #4fc3f7; cursor: pointer; }
+    #videos { flex: 1; display: grid; gap: 8px; padding: 16px;
+              grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); align-content: start; }
+    .tile { position: relative; background: #0f3460; border-radius: 8px; overflow: hidden; aspect-ratio: 16/9; }
+    .tile video { width: 100%; height: 100%; object-fit: cover; }
+    .tile .label { position: absolute; bottom: 6px; left: 8px; font-size: 12px;
+                    background: rgba(0,0,0,0.5); padding: 2px 8px; border-radius: 4px; }
+    .controls { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+                display: flex; gap: 12px; }
+    .controls button { width: 48px; height: 48px; border-radius: 50%; border: none;
+                        background: #0f3460; color: white; font-size: 18px; cursor: pointer; }
+    .controls button.off { background: #e94560; }
+    .controls button.leave { background: #e94560; }
+
+    .layout { display: flex; }
+    #sidebar { width: 280px; background: #16213e; display: flex; flex-direction: column;
+               height: calc(100vh - 56px); border-left: 1px solid #0f3460; }
+    #messages { flex: 1; overflow-y: auto; padding: 12px; font-size: 13px; }
+    .msg { margin-bottom: 10px; }
+    .msg b { color: #4fc3f7; }
+    .msg.file a { color: #4fc3f7; }
+    #chat-form { display: flex; border-top: 1px solid #0f3460; }
+    #chat-input { flex: 1; border: none; background: #0f3460; color: white; padding: 10px; }
+    #chat-form button, #file-label { background: #0f3460; color: white; border: none;
+                                       padding: 10px 14px; cursor: pointer; }
+    #file-input { display: none; }
+
+    #whiteboard-modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7);
+                         align-items: center; justify-content: center; z-index: 10; }
+    #whiteboard-box { background: white; border-radius: 8px; padding: 12px; }
+    #whiteboard-canvas { background: white; cursor: crosshair; touch-action: none; }
+    #wb-toolbar { display: flex; gap: 8px; margin-bottom: 8px; align-items: center; }
+    #wb-toolbar button { padding: 6px 12px; border: none; border-radius: 4px; cursor: pointer;
+                          background: #0f3460; color: white; }
+    #wb-toolbar input[type=color] { width: 32px; height: 32px; border: none; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <header>
+    <div id="room-code">Room: <span id="code-text"></span> (click to copy)</div>
+    <div id="participant-count"></div>
+  </header>
+
+  <div class="layout">
+    <div id="videos"></div>
+    <div id="sidebar">
+      <div id="messages"></div>
+      <form id="chat-form">
+        <label id="file-label" for="file-input">📎</label>
+        <input type="file" id="file-input">
+        <input type="text" id="chat-input" placeholder="Type a message...">
+        <button type="submit">➤</button>
+      </form>
+    </div>
+  </div>
+
+  <div id="whiteboard-modal">
+    <div id="whiteboard-box">
+      <div id="wb-toolbar">
+        <input type="color" id="wb-color" value="#000000">
+        <button id="wb-clear">Clear</button>
+        <button id="wb-close">Close</button>
+      </div>
+      <canvas id="whiteboard-canvas" width="700" height="450"></canvas>
+    </div>
+  </div>
+
+  <div class="controls">
+    <button id="mic-btn" title="Toggle mic">🎤</button>
+    <button id="cam-btn" title="Toggle camera">📷</button>
+    <button id="screen-btn" title="Share screen">🖥️</button>
+    <button id="whiteboard-btn" title="Whiteboard">🖊️</button>
+    <button id="leave-btn" class="leave" title="Leave call">📞</button>
+  </div>
+
+  <script>
+    const roomCode = new URLSearchParams(window.location.search).get('code');
+    document.getElementById('code-text').textContent = roomCode;
+    document.getElementById('room-code').onclick = () => {
+      navigator.clipboard.writeText(roomCode);
+    };
+
+    let localStream;
+    let screenStream;
+    const peers = {};
+    let myName = '';
+    let myId = null;
+
+    const rtcConfig = {
+      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+    };
+
+    // ---- Encryption (chat messages) ----
+    async function getRoomKey() {
+      const encoder = new TextEncoder();
+      const data = encoder.encode(roomCode);
+      const hash = await crypto.subtle.digest('SHA-256', data);
+      return crypto.subtle.importKey('raw', hash, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']);
+    }
+
+    async function encryptText(key, text) {
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      const encoded = new TextEncoder().encode(text);
+      const cipher = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, encoded);
+      return { iv: Array.from(iv), data: Array.from(new Uint8Array(cipher)) };
+    }
+
+    async function decryptText(key, { iv, data }) {
+      const plain = await crypto.subtle.decrypt(
+        { name: 'AES-GCM', iv: new Uint8Array(iv) }, key, new Uint8Array(data)
+      );
+      return new TextDecoder().decode(plain);
+    }
+
+    let roomKey;
+    getRoomKey().then(key => { roomKey = key; });
+
+    function addVideoTile(id, stream, label) {
+      let tile = document.getElementById('tile-' + id);
+      if (!tile) {
+        tile = document.createElement('div');
+        tile.className = 'tile';
+        tile.id = 'tile-' + id;
+        tile.innerHTML = `<video autoplay playsinline ${id === 'me' ? 'muted' : ''}></video><div class="label">${label}</div>`;
+        document.getElementById('videos').appendChild(tile);
+      }
+      tile.querySelector('video').srcObject = stream;
+    }
+
+    function removeVideoTile(id) {
+      const tile = document.getElementById('tile-' + id);
+      if (tile) tile.remove();
+    }
+
+    function createPeerConnection(socketId, remoteName) {
+      const pc = new RTCPeerConnection(rtcConfig);
+      peers[socketId] = pc;
+
+      localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+
+      pc.ontrack = (event) => {
+        addVideoTile(socketId, event.streams[0], remoteName);
+      };
+
+      pc.onicecandidate = (event) => {
+        if (event.candidate) {
+          socket.emit('signal', { to: socketId, data: { type: 'ice', candidate: event.candidate } });
+        }
+      };
+
+      return pc;
+    }
+
+    async function callUser(socketId, remoteName) {
+      const pc = createPeerConnection(socketId, remoteName);
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      socket.emit('signal', { to: socketId, data: { type: 'offer', offer } });
+    }
+
+    async function handleSignal({ from, userName, data }) {
+      if (data.type === 'offer') {
+        const pc = createPeerConnection(from, userName);
+        await pc.setRemoteDescription(data.offer);
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        socket.emit('signal', { to: from, data: { type: 'answer', answer } });
+      } else if (data.type === 'answer') {
+        await peers[from].setRemoteDescription(data.answer);
+      } else if (data.type === 'ice') {
+        await peers[from].addIceCandidate(data.candidate);
+      }
+    }
+
+    const socket = io();
+    let readyToJoin = false;
+
+    socket.on('connect', () => {
+      myId = socket.id;
+      attemptJoin();
+    });
+
+    function attemptJoin() {
+      if (socket.connected && readyToJoin) {
+        socket.emit('join-room', { roomCode, userName: myName });
+      }
+    }
+
+    socket.on('existing-users', (users) => {
+      document.getElementById('participant-count').textContent = (users.length + 1) + ' in call';
+      users.forEach(u => callUser(u.socketId, u.userName));
+    });
+
+    socket.on('user-joined', () => {
+      const count = Object.keys(peers).length + 1;
+      document.getElementById('participant-count').textContent = (count + 1) + ' in call';
+    });
+
+    socket.on('signal', handleSignal);
+
+    socket.on('user-left', ({ socketId }) => {
+      if (peers[socketId]) peers[socketId].close();
+      delete peers[socketId];
+      removeVideoTile(socketId);
+    });
+
+    // ---- Chat & file sharing ----
+    function escapeHtml(str) {
+      const div = document.createElement('div');
+      div.textContent = str;
+      return div.innerHTML;
+    }
+
+    function addMessage(name, text, isFile) {
+      const el = document.createElement('div');
+      el.className = 'msg' + (isFile ? ' file' : '');
+      el.innerHTML = isFile
+        ? `<b>${name}:</b> ${text}`
+        : `<b>${name}:</b> ${escapeHtml(text)}`;
+      document.getElementById('messages').appendChild(el);
+      document.getElementById('messages').scrollTop = 999999;
+    }
+
+    document.getElementById('chat-form').onsubmit = async (e) => {
+      e.preventDefault();
+      const input = document.getElementById('chat-input');
+      const fileInput = document.getElementById('file-input');
+
+      if (fileInput.files[0]) {
+        sendFile(fileInput.files[0]);
+        fileInput.value = '';
+        return;
+      }
+
+      if (!input.value.trim()) return;
+      const encrypted = await encryptText(roomKey, input.value);
+      socket.emit('chat-message', { roomCode, encrypted });
+      addMessage('You', input.value, false);
+      input.value = '';
+    };
+
+    function sendFile(file) {
+      const reader = new FileReader();
+      reader.onload = () => {
+        socket.emit('chat-file', {
+          roomCode,
+          fileName: file.name,
+          fileData: reader.result
+        });
+        addMessage('You', fileLinkHtml(file.name, reader.result), true);
+      };
+      reader.readAsDataURL(file);
+    }
+
+    function fileLinkHtml(fileName, dataUrl) {
+      return `<a href="${dataUrl}" download="${escapeHtml(fileName)}">📎 ${escapeHtml(fileName)}</a>`;
+    }
+
+  socket.on('chat-message', async ({ userName, encrypted }) => {
+  try {
+    const text = await decryptText(roomKey, encrypted);
+    addMessage(userName, text, false);
+  } catch (err) {
+    console.error('Failed to decrypt message:', err);
+  }
+});
+    socket.on('chat-file', ({ userName, fileName, fileData }) => {
+      addMessage(userName, fileLinkHtml(fileName, fileData), true);
+    });
+
+    // ---- Whiteboard ----
+    const wbModal = document.getElementById('whiteboard-modal');
+    const canvas = document.getElementById('whiteboard-canvas');
+    const ctx = canvas.getContext('2d');
+    let drawing = false;
+    let lastX = 0, lastY = 0;
+
+    document.getElementById('whiteboard-btn').onclick = () => {
+      wbModal.style.display = 'flex';
+    };
+    document.getElementById('wb-close').onclick = () => {
+      wbModal.style.display = 'none';
+    };
+    document.getElementById('wb-clear').onclick = () => {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      socket.emit('whiteboard-clear', { roomCode });
+    };
+
+    function getPos(e) {
+      const rect = canvas.getBoundingClientRect();
+      return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    }
+
+    function drawLine(x1, y1, x2, y2, color) {
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 3;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
+    }
+
+    canvas.addEventListener('pointerdown', (e) => {
+      drawing = true;
+      const pos = getPos(e);
+      lastX = pos.x; lastY = pos.y;
+    });
+
+    canvas.addEventListener('pointermove', (e) => {
+      if (!drawing) return;
+      const pos = getPos(e);
+      const color = document.getElementById('wb-color').value;
+      drawLine(lastX, lastY, pos.x, pos.y, color);
+      socket.emit('whiteboard-draw', { roomCode, x1: lastX, y1: lastY, x2: pos.x, y2: pos.y, color });
+      lastX = pos.x; lastY = pos.y;
+    });
+
+    window.addEventListener('pointerup', () => { drawing = false; });
+
+    socket.on('whiteboard-draw', ({ x1, y1, x2, y2, color }) => {
+      drawLine(x1, y1, x2, y2, color);
+    });
+
+    socket.on('whiteboard-clear', () => {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+    });
+
+    // ---- Camera / mic / screen share ----
+    async function start() {
+      const meRes = await fetch('/api/me');
+      const me = await meRes.json();
+      if (!me) { window.location.href = '/account.html'; return; }
+      myName = me.name;
+
+      localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      addVideoTile('me', localStream, myName + ' (you)');
+
+      readyToJoin = true;
+      attemptJoin();
+    }
+
+    document.getElementById('mic-btn').onclick = (e) => {
+      const track = localStream.getAudioTracks()[0];
+      track.enabled = !track.enabled;
+      e.target.classList.toggle('off', !track.enabled);
+    };
+
+    document.getElementById('cam-btn').onclick = (e) => {
+      const track = localStream.getVideoTracks()[0];
+      track.enabled = !track.enabled;
+      e.target.classList.toggle('off', !track.enabled);
+    };
+
+    let isScreenSharing = false;
+
+    document.getElementById('screen-btn').onclick = async () => {
+      if (!isScreenSharing) {
+        try {
+          screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+        } catch (err) {
+          return;
+        }
+        const screenTrack = screenStream.getVideoTracks()[0];
+
+        Object.values(peers).forEach(pc => {
+          const sender = pc.getSenders().find(s => s.track && s.track.kind === 'video');
+          if (sender) sender.replaceTrack(screenTrack);
+        });
+
+        addVideoTile('me', screenStream, myName + ' (you, screen)');
+        isScreenSharing = true;
+        document.getElementById('screen-btn').classList.add('off');
+
+        screenTrack.onended = () => stopScreenShare();
+      } else {
+        stopScreenShare();
+      }
+    };
+
+    function stopScreenShare() {
+      if (screenStream) screenStream.getTracks().forEach(t => t.stop());
+
+      const cameraTrack = localStream.getVideoTracks()[0];
+      Object.values(peers).forEach(pc => {
+        const sender = pc.getSenders().find(s => s.track && s.track.kind === 'video');
+        if (sender) sender.replaceTrack(cameraTrack);
+      });
+
+      addVideoTile('me', localStream, myName + ' (you)');
+      isScreenSharing = false;
+      document.getElementById('screen-btn').classList.remove('off');
+    }
+
+    document.getElementById('leave-btn').onclick = () => {
+      Object.values(peers).forEach(pc => pc.close());
+      if (localStream) localStream.getTracks().forEach(t => t.stop());
+      if (screenStream) screenStream.getTracks().forEach(t => t.stop());
+      socket.disconnect();
+      window.location.href = '/';
+    };
+
+    start();
+  </script>
+</body>
+</html>

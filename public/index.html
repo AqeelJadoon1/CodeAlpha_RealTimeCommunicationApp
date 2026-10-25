@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Connect</title>
+     <link rel="stylesheet" href="/polish.css">
+  <style>
+    body { font-family: Arial, sans-serif; margin: 0; background: #1a1a2e; color: white;
+           display: flex; align-items: center; justify-content: center; min-height: 100vh; }
+    .box { background: #16213e; padding: 32px; border-radius: 12px; width: 320px; text-align: center; }
+    h1 { margin-top: 0; }
+    button, input { width: 100%; box-sizing: border-box; padding: 12px; margin: 8px 0;
+                    border-radius: 6px; border: none; font-size: 15px; }
+    button { background: #0f3460; color: white; cursor: pointer; }
+    button:hover { background: #16537e; }
+    input { background: #0f3460; color: white; border: 1px solid #16537e; }
+    #user-area { margin-bottom: 16px; font-size: 14px; }
+    #user-area a, #user-area button { width: auto; display: inline-block; padding: 6px 12px; }
+    .error { color: #ff6b6b; font-size: 13px; min-height: 18px; }
+  </style>
+</head>
+<body>
+  <div class="box">
+    <h1>Connect</h1>
+    <div id="user-area"></div>
+    <div id="app" style="display:none;">
+      <button id="create-btn">Start a new call</button>
+      <hr style="border-color:#0f3460; margin:20px 0;">
+      <input type="text" id="join-code" placeholder="Enter room code">
+      <button id="join-btn">Join call</button>
+      <div class="error" id="error"></div>
+    </div>
+  </div>
+
+  <script>
+    async function checkUser() {
+      const response = await fetch('/api/me');
+      const me = await response.json();
+      const area = document.getElementById('user-area');
+
+      if (me) {
+        area.innerHTML = `Signed in as ${me.name} <button id="logout-btn">Log out</button>`;
+        document.getElementById('logout-btn').onclick = async () => {
+          await fetch('/api/logout', { method: 'POST' });
+          window.location.reload();
+        };
+        document.getElementById('app').style.display = 'block';
+      } else {
+        area.innerHTML = '<a href="/account.html" style="color:#4fc3f7;">Log in / Register to start</a>';
+      }
+    }
+
+    document.getElementById('create-btn').onclick = async () => {
+      const response = await fetch('/api/rooms', { method: 'POST' });
+      const { code } = await response.json();
+      window.location.href = '/room.html?code=' + code;
+    };
+
+    document.getElementById('join-btn').onclick = async () => {
+      const code = document.getElementById('join-code').value.trim();
+      if (!code) return;
+      const response = await fetch('/api/rooms/' + code);
+      if (!response.ok) {
+        document.getElementById('error').textContent = 'Room not found';
+        return;
+      }
+      window.location.href = '/room.html?code=' + code;
+    };
+
+    checkUser();
+  </script>
+</body>
+</html>

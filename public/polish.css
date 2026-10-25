@@ -1,0 +1,98 @@
+/* Shared polish for all CodeAlpha projects.
+   Drop this file into each project's /public folder, then add this line
+   near the top of each HTML file's <head>, right after the <title>:
+
+   <link rel="stylesheet" href="/polish.css">
+
+   This only touches general tags and the existing class names your apps
+   already use (header, button, input, .card, .post, .task, etc.) — it
+   won't conflict with any JS, since JS targets IDs, not these styles. */
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, Arial, sans-serif !important;
+  line-height: 1.5;
+}
+
+/* Headers — slightly deeper, with a subtle shadow instead of a flat line */
+header {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+}
+
+header h1 {
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+/* Buttons — rounder, with a hover lift */
+button {
+  border-radius: 8px !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.01em;
+  transition: transform 0.12s ease, box-shadow 0.12s ease, opacity 0.12s ease;
+}
+
+button:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.15);
+  opacity: 0.95;
+}
+
+button:active {
+  transform: translateY(0);
+}
+
+/* Inputs & textareas — softer corners, visible focus state */
+input, textarea, select {
+  border-radius: 8px !important;
+  transition: box-shadow 0.15s ease, border-color 0.15s ease;
+}
+
+input:focus, textarea:focus, select:focus {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(79, 195, 247, 0.35);
+  border-color: #4fc3f7 !important;
+}
+
+/* Cards, posts, tasks, project cards — consistent rounded shadow look
+   across all four apps, since they all use similar card patterns */
+.card, .post, .task, .project-card, .comment, .tile {
+  border-radius: 10px !important;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
+  transition: box-shadow 0.15s ease, transform 0.15s ease;
+}
+
+.card:hover, .post:hover, .project-card:hover {
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12);
+}
+
+/* Kanban-style columns (Task 3) */
+.column {
+  border-radius: 12px !important;
+}
+
+/* Scrollbars — thin, unobtrusive, matches dark or light backgrounds */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(128, 128, 128, 0.4);
+  border-radius: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* Links — a touch more deliberate */
+a {
+  transition: opacity 0.12s ease;
+}
+a:hover {
+  opacity: 0.8;
+}
